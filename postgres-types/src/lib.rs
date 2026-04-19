@@ -194,6 +194,8 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub use range::Range;
+
 #[cfg(feature = "derive")]
 pub use postgres_derive::{FromSql, ToSql};
 
@@ -288,6 +290,7 @@ mod geo_types_07;
 mod jiff_01;
 #[cfg(feature = "with-jiff-0_2")]
 mod jiff_02;
+mod range;
 #[cfg(feature = "with-serde_json-1")]
 mod serde_json_1;
 #[cfg(feature = "with-smol_str-01")]
@@ -830,6 +833,24 @@ pub enum IsNull {
     Yes,
     /// The value is not NULL.
     No,
+}
+
+impl From<postgres_protocol::IsNull> for IsNull {
+    fn from(value: postgres_protocol::IsNull) -> Self {
+        match value {
+            postgres_protocol::IsNull::Yes => Self::Yes,
+            postgres_protocol::IsNull::No => Self::No,
+        }
+    }
+}
+
+impl From<IsNull> for postgres_protocol::IsNull {
+    fn from(value: IsNull) -> Self {
+        match value {
+            IsNull::Yes => postgres_protocol::IsNull::Yes,
+            IsNull::No => postgres_protocol::IsNull::No,
+        }
+    }
 }
 
 /// A trait for types that can be converted into Postgres values.

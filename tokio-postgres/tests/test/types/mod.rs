@@ -5,10 +5,13 @@ use std::f32;
 use std::f64;
 use std::fmt;
 use std::net::IpAddr;
+use std::ops::Bound;
 use std::result;
 use std::str::FromStr;
 use std::time::{Duration, UNIX_EPOCH};
-use tokio_postgres::types::{FromSql, FromSqlOwned, IsNull, Kind, PgLsn, ToSql, Type, WrongType};
+use tokio_postgres::types::{
+    FromSql, FromSqlOwned, IsNull, Kind, PgLsn, Range, ToSql, Type, WrongType,
+};
 
 use crate::connect;
 use bytes::BytesMut;
@@ -490,6 +493,38 @@ async fn test_slice_range() {
         Some(e) if e.is::<WrongType>() => {}
         _ => panic!("Unexpected error {:?}", err),
     };
+}
+
+#[test]
+fn test_range_accepts_inner_type() {
+    assert!(<Range<i32> as FromSql>::accepts(&Type::INT4_RANGE));
+    assert!(<Range<i32> as ToSql>::accepts(&Type::INT4_RANGE));
+    assert!(!<Range<i32> as FromSql>::accepts(&Type::INT4));
+    assert!(!<Range<i32> as ToSql>::accepts(&Type::INT4));
+}
+
+#[tokio::test]
+async fn test_int4range_roundtrip() {
+    let client = connect("user=postgres").await;
+
+    let range = Range::Nonempty {
+        lower: Bound::Included(1i32),
+        upper: Bound::Excluded(10i32),
+    };
+
+    let row = client
+        .query_one("SELECT $1::INT4RANGE", &[&range])
+        .await
+        .unwrap();
+    let roundtrip: Range<i32> = row.get(0);
+
+    match roundtrip {
+        Range::Nonempty { lower, upper } => {
+            assert!(matches!(lower, Bound::Included(1)));
+            assert!(matches!(upper, Bound::Excluded(10)));
+        }
+        Range::Empty => panic!("unexpected empty range"),
+    }
 }
 
 #[tokio::test]
