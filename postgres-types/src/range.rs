@@ -1,4 +1,10 @@
-use std::{error::Error, ops::Bound};
+use std::{
+    error::Error,
+    fmt,
+    ops::{
+        Bound, Range as StdRange, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive,
+    },
+};
 
 use bytes::BytesMut;
 use postgres_protocol::types::RangeBound;
@@ -17,6 +23,169 @@ pub enum Range<T> {
         /// The upper bound.
         upper: Bound<T>,
     },
+}
+
+/// An error indicating a [`Range`] cannot be represented by a std range type.
+#[derive(Debug, Clone, Copy)]
+pub struct RangeConversionError {
+    target: &'static str,
+}
+
+impl RangeConversionError {
+    fn new(target: &'static str) -> Self {
+        Self { target }
+    }
+}
+
+impl fmt::Display for RangeConversionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "range cannot be represented as std::ops::{}",
+            self.target
+        )
+    }
+}
+
+impl Error for RangeConversionError {}
+
+impl<T> From<StdRange<T>> for Range<T> {
+    fn from(value: StdRange<T>) -> Self {
+        Range::Nonempty {
+            lower: Bound::Included(value.start),
+            upper: Bound::Excluded(value.end),
+        }
+    }
+}
+
+impl<T> From<RangeInclusive<T>> for Range<T> {
+    fn from(value: RangeInclusive<T>) -> Self {
+        let (lower, upper) = value.into_inner();
+        Range::Nonempty {
+            lower: Bound::Included(lower),
+            upper: Bound::Included(upper),
+        }
+    }
+}
+
+impl<T> From<RangeFrom<T>> for Range<T> {
+    fn from(value: RangeFrom<T>) -> Self {
+        Range::Nonempty {
+            lower: Bound::Included(value.start),
+            upper: Bound::Unbounded,
+        }
+    }
+}
+
+impl<T> From<RangeTo<T>> for Range<T> {
+    fn from(value: RangeTo<T>) -> Self {
+        Range::Nonempty {
+            lower: Bound::Unbounded,
+            upper: Bound::Excluded(value.end),
+        }
+    }
+}
+
+impl<T> From<RangeToInclusive<T>> for Range<T> {
+    fn from(value: RangeToInclusive<T>) -> Self {
+        Range::Nonempty {
+            lower: Bound::Unbounded,
+            upper: Bound::Included(value.end),
+        }
+    }
+}
+
+impl<T> From<RangeFull> for Range<T> {
+    fn from(_: RangeFull) -> Self {
+        Range::Nonempty {
+            lower: Bound::Unbounded,
+            upper: Bound::Unbounded,
+        }
+    }
+}
+
+impl<T> TryFrom<Range<T>> for StdRange<T> {
+    type Error = RangeConversionError;
+
+    fn try_from(value: Range<T>) -> Result<Self, Self::Error> {
+        match value {
+            Range::Nonempty {
+                lower: Bound::Included(start),
+                upper: Bound::Excluded(end),
+            } => Ok(start..end),
+            _ => Err(RangeConversionError::new("Range")),
+        }
+    }
+}
+
+impl<T> TryFrom<Range<T>> for RangeInclusive<T> {
+    type Error = RangeConversionError;
+
+    fn try_from(value: Range<T>) -> Result<Self, Self::Error> {
+        match value {
+            Range::Nonempty {
+                lower: Bound::Included(start),
+                upper: Bound::Included(end),
+            } => Ok(start..=end),
+            _ => Err(RangeConversionError::new("RangeInclusive")),
+        }
+    }
+}
+
+impl<T> TryFrom<Range<T>> for RangeFrom<T> {
+    type Error = RangeConversionError;
+
+    fn try_from(value: Range<T>) -> Result<Self, Self::Error> {
+        match value {
+            Range::Nonempty {
+                lower: Bound::Included(start),
+                upper: Bound::Unbounded,
+            } => Ok(start..),
+            _ => Err(RangeConversionError::new("RangeFrom")),
+        }
+    }
+}
+
+impl<T> TryFrom<Range<T>> for RangeTo<T> {
+    type Error = RangeConversionError;
+
+    fn try_from(value: Range<T>) -> Result<Self, Self::Error> {
+        match value {
+            Range::Nonempty {
+                lower: Bound::Unbounded,
+                upper: Bound::Excluded(end),
+            } => Ok(..end),
+            _ => Err(RangeConversionError::new("RangeTo")),
+        }
+    }
+}
+
+impl<T> TryFrom<Range<T>> for RangeToInclusive<T> {
+    type Error = RangeConversionError;
+
+    fn try_from(value: Range<T>) -> Result<Self, Self::Error> {
+        match value {
+            Range::Nonempty {
+                lower: Bound::Unbounded,
+                upper: Bound::Included(end),
+            } => Ok(..=end),
+            _ => Err(RangeConversionError::new("RangeToInclusive")),
+        }
+    }
+}
+
+impl<T> TryFrom<Range<T>> for RangeFull {
+    type Error = RangeConversionError;
+
+    fn try_from(value: Range<T>) -> Result<Self, Self::Error> {
+        match value {
+            Range::Nonempty {
+                lower: Bound::Unbounded,
+                upper: Bound::Unbounded,
+            } => Ok(..),
+            _ => Err(RangeConversionError::new("RangeFull")),
+        }
+    }
 }
 
 impl<'a, T: FromSql<'a>> FromSql<'a> for Range<T> {
@@ -110,4 +279,151 @@ impl<T: ToSql> ToSql for Range<T> {
     }
 
     to_sql_checked!();
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Bound;
+
+    use super::Range;
+
+    #[test]
+    fn from_std_range() {
+        let range: Range<i32> = (1..10).into();
+        match range {
+            Range::Nonempty { lower, upper } => {
+                assert!(matches!(lower, Bound::Included(1)));
+                assert!(matches!(upper, Bound::Excluded(10)));
+            }
+            Range::Empty => panic!("unexpected empty range"),
+        }
+    }
+
+    #[test]
+    fn from_std_range_inclusive() {
+        let range: Range<i32> = (1..=10).into();
+        match range {
+            Range::Nonempty { lower, upper } => {
+                assert!(matches!(lower, Bound::Included(1)));
+                assert!(matches!(upper, Bound::Included(10)));
+            }
+            Range::Empty => panic!("unexpected empty range"),
+        }
+    }
+
+    #[test]
+    fn from_std_range_from() {
+        let range: Range<i32> = (1..).into();
+        match range {
+            Range::Nonempty { lower, upper } => {
+                assert!(matches!(lower, Bound::Included(1)));
+                assert!(matches!(upper, Bound::Unbounded));
+            }
+            Range::Empty => panic!("unexpected empty range"),
+        }
+    }
+
+    #[test]
+    fn from_std_range_to() {
+        let range: Range<i32> = (..10).into();
+        match range {
+            Range::Nonempty { lower, upper } => {
+                assert!(matches!(lower, Bound::Unbounded));
+                assert!(matches!(upper, Bound::Excluded(10)));
+            }
+            Range::Empty => panic!("unexpected empty range"),
+        }
+    }
+
+    #[test]
+    fn from_std_range_to_inclusive() {
+        let range: Range<i32> = (..=10).into();
+        match range {
+            Range::Nonempty { lower, upper } => {
+                assert!(matches!(lower, Bound::Unbounded));
+                assert!(matches!(upper, Bound::Included(10)));
+            }
+            Range::Empty => panic!("unexpected empty range"),
+        }
+    }
+
+    #[test]
+    fn from_std_range_full() {
+        let range: Range<i32> = (..).into();
+        match range {
+            Range::Nonempty { lower, upper } => {
+                assert!(matches!(lower, Bound::Unbounded));
+                assert!(matches!(upper, Bound::Unbounded));
+            }
+            Range::Empty => panic!("unexpected empty range"),
+        }
+    }
+
+    #[test]
+    fn into_std_range() {
+        let range = Range::Nonempty {
+            lower: Bound::Included(1),
+            upper: Bound::Excluded(10),
+        };
+        let std_range = std::ops::Range::<i32>::try_from(range).unwrap();
+        assert_eq!(std_range, 1..10);
+    }
+
+    #[test]
+    fn into_std_range_inclusive() {
+        let range = Range::Nonempty {
+            lower: Bound::Included(1),
+            upper: Bound::Included(10),
+        };
+        let std_range = std::ops::RangeInclusive::<i32>::try_from(range).unwrap();
+        assert_eq!(std_range, 1..=10);
+    }
+
+    #[test]
+    fn into_std_range_from() {
+        let range = Range::Nonempty {
+            lower: Bound::Included(1),
+            upper: Bound::Unbounded,
+        };
+        let std_range = std::ops::RangeFrom::<i32>::try_from(range).unwrap();
+        assert_eq!(std_range.start, 1);
+    }
+
+    #[test]
+    fn into_std_range_to() {
+        let range = Range::Nonempty {
+            lower: Bound::Unbounded,
+            upper: Bound::Excluded(10),
+        };
+        let std_range = std::ops::RangeTo::<i32>::try_from(range).unwrap();
+        assert_eq!(std_range.end, 10);
+    }
+
+    #[test]
+    fn into_std_range_to_inclusive() {
+        let range = Range::Nonempty {
+            lower: Bound::Unbounded,
+            upper: Bound::Included(10),
+        };
+        let std_range = std::ops::RangeToInclusive::<i32>::try_from(range).unwrap();
+        assert_eq!(std_range.end, 10);
+    }
+
+    #[test]
+    fn into_std_range_full() {
+        let range: Range<i32> = Range::Nonempty {
+            lower: Bound::Unbounded,
+            upper: Bound::Unbounded,
+        };
+        std::ops::RangeFull::try_from(range).unwrap();
+    }
+
+    #[test]
+    fn into_std_range_error() {
+        let range = Range::Nonempty {
+            lower: Bound::Included(1),
+            upper: Bound::Included(10),
+        };
+        assert!(std::ops::Range::<i32>::try_from(range).is_err());
+    }
 }
